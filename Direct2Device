@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Direct2Device</title>
+  <style>
+    body { font-family: Arial, sans-serif; margin: 0; padding: 20px; background-color: #f3f3f3; }
+    .container { max-width: 600px; margin: auto; background-color: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1); }
+    button, input[type="file"], input[type="text"], input[type="search"], select { width: 100%; padding: 10px; margin: 10px 0; border-radius: 4px; border: 1px solid #ddd; }
+    button { background-color: #4CAF50; color: white; cursor: pointer; }
+    button:hover { background-color: #45a049; }
+    .message { margin-top: 20px; font-size: 18px; text-align: center; }
+    .uploadForm { display: none; }
+    .videoContainer { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+    .videoItem { position: relative; cursor: pointer; }
+    .videoItem video { width: 100%; max-width: 200px; }
+    .videoItem .dots { position: absolute; top: 5px; right: 5px; font-size: 20px; color: #fff; background-color: rgba(0, 0, 0, 0.6); border-radius: 50%; padding: 5px; }
+    .dotsMenu { display: none; position: absolute; top: 30px; right: 5px; background-color: rgba(0, 0, 0, 0.8); color: white; border-radius: 5px; padding: 10px; }
+    .dotsMenu button { background: none; border: none; color: white; padding: 5px 10px; cursor: pointer; }
+    .dotsMenu button:hover { background-color: rgba(255, 255, 255, 0.2); }
+  </style>
+</head>
+<body>
+
+<!-- Sign-up/Login Section -->
+<div id="authSection" class="container">
+  <h1>Welcome to Direct2Device</h1>
+  <input type="email" id="signupEmail" placeholder="Email" required>
+  <input type="password" id="signupPassword" placeholder="Password" required>
+  <button onclick="signup()">Sign Up</button>
+  <button onclick="login()">Log In</button>
+  <div class="message" id="authMessage"></div>
+</div>
+
+<!-- Upload Button -->
+<button id="uploadButton" onclick="showUploadForm()">Upload Media</button>
+
+<!-- Upload Form -->
+<div id="uploadForm" class="container uploadForm">
+  <h1>Upload Video</h1>
+  <input type="file" id="videoFile" accept="video/*" required>
+  <input type="text" id="title" placeholder="Video Title" required>
+  <input type="text" id="description" placeholder="Video Description" required>
+  <label for="sharedSettings">Shared Settings:</label>
+  <select id="sharedSettings" required>
+    <option value="private">Private</option>
+    <option value="public">Public</option>
+  </select>
+  <button onclick="uploadVideo()">Upload Video</button>
+  <div class="message" id="uploadMessage"></div>
+</div>
+
+<!-- Search Bar -->
+<input type="search" id="searchInput" placeholder="Search Videos" oninput="searchVideos()">
+
+<!-- Video Thumbnails and Management -->
+<div id="videosContainer" class="container videoContainer"></div>
+
+<!-- Public Gallery -->
+<h2>Public Gallery</h2>
+<div id="publicGallery" class="container videoContainer"></div>
+
+<script>
+// Initialize IndexedDB for video and user management
+let db;
+let currentUser = null; // Current user will be stored after login/signup
+const request = indexedDB.open("Direct2DeviceDB", 1);
+
+// Set up the database schema
+request.onsuccess = (event) => {
+  db = event.target.result;
+  displayVideos();
+};
+
+request.onerror = (event) => {
+  console.error("Error opening IndexedDB:", event);
+};
+
+request.onupgradeneeded = (event) => {
+  db = event.target.result;
+  // Create object stores for videos and users
+  if (!db.objectStoreNames.contains("videos")) {
+    const videoStore = db.createObjectStore("videos", { keyPath: "fileName" });
+    videoStore.createIndex("uploadedBy", "uploadedBy", { unique: false });
+  }
+  if (!db.objectStoreNames.contains("users")) {
+    const userStore = db.createObjectStore("users", { keyPath: "email" });
+  }
+};
+
+// User sign-up function
+function signup() {
+  const email = document.getElementById("signupEmail").value;
+  const password = document.getElementById("signupPassword").value;
+
+  if (!email || !password) {
+    document.getElementById("authMessage").textContent = "Please fill in both fields!";
+    return;
+  }
+
+  const transaction = db.transaction(["users"], "readwrite");
+  const userStore = transaction.objectStore("users");
+  
+  // Check if user already exists
+  const existingUser = userStore.get(email);
+  existingUser.onsuccess = function() {
+    if (existingUser.result) {
+      document.getElementById("authMessage").textContent = "User already exists. Please log in.";
+    } else {
+      userStore.put({ email, password });
+      document.getElementById("authMessage").textContent = "User signed up successfully. Please log in.";
+    }
+  };
+}
+
+// User login function
+function login() {
+  const email = document.getElementById("signupEmail").value;
+  const password = document.getElementById("signupPassword").value;
+
+  if (!email || !password) {
+    document.getElementById("authMessage").textContent = "Please fill in both fields!";
+    return;
+  }
+
+  const transaction = db.transaction(["users"], "readonly");
+  const userStore = transaction.objectStore("users");
+  
+  const userRequest = userStore.get(email);
+  userRequest.onsuccess = function(event) {
+    const user = event.target.result;
+    if (user && user.password === password) {
+      currentUser = email;
+      document.getElementById("authMessage").textContent = `Welcome, ${currentUser}!`;
+      document.getElementById("authSection").style.display = "none"; // Hide auth section after login
+      document.getElementById("uploadButton").style.display = "block"; // Show upload button
+    } else {
+      document.getElementById("authMessage").textContent = "Invalid credentials, please try again.";
+    }
+  };
+}
+
+// Show the upload form when the "Upload Media" button is clicked
+function showUploadForm() {
+  document.getElementById("uploadForm").style.display = "block";
+}
+
+// Upload video and save its metadata to IndexedDB
+function uploadVideo() {
+  const videoFile = document.getElementById("videoFile").files[0];
+  const title = document.getElementById("title").value;
+  const description = document.getElementById("description").value;
+  const sharedSettings = document.getElementById("sharedSettings").value;
+
+  if (!videoFile || !title || !description || !sharedSettings) {
+    document.getElementById("uploadMessage").textContent = "Please fill in all fields!";
+    return;
+  }
+
+  const videoMetadata = {
+    title,
+    description,
+    sharedSettings,
+    fileName: videoFile.name,
+    uploadedBy: currentUser,
+    timestamp: new Date().toISOString(),
+  };
+
+  const videoFileReader = new FileReader();
+  videoFileReader.onloadend = function () {
+    const videoDataURL = videoFileReader.result;
+
+    // Store video metadata and file (as a Blob) in IndexedDB
+    const transaction = db.transaction(["videos"], "readwrite");
+    const videoStore = transaction.objectStore("videos");
+    videoStore.put({ ...videoMetadata, videoDataURL });
+
+    transaction.oncomplete = function () {
+      displayVideos();
+    };
+
+    transaction.onerror = function (event) {
+      console.error("Error storing video:", event);
+    };
+  };
+  videoFileReader.readAsDataURL(videoFile);
+}
+
+// Display videos (private and public)
+function displayVideos() {
+  const videosContainer = document.getElementById("videosContainer");
+  const publicGallery = document.getElementById("publicGallery");
+
+  videosContainer.innerHTML = '';
+  publicGallery.innerHTML = '';
+
+  const transaction = db.transaction(["videos"], "readonly");
+  const videoStore = transaction.objectStore("videos");
+  const allVideos = videoStore.getAll();
+
+  allVideos.onsuccess = function (event) {
+    const uploadedVideos = event.target.result;
+
+    uploadedVideos.forEach(video => {
+      const videoItem = document.createElement('div');
+      videoItem.classList.add('videoItem');
+      videoItem.innerHTML = `
+        <video src="${video.videoDataURL}" controls></video>
+        <div class="dots" onclick="toggleMenu(event, '${video.fileName}')">...</div>
+        <div class="dotsMenu" id="dotsMenu_${video.fileName}">
+          <button onclick="viewVideo('${video.fileName}')">View Video</button>
+          <button onclick="reportVideo('${video.fileName}')">Report Video</button>
+          ${video.uploadedBy === currentUser ? '<button onclick="deleteVideo(\'' + video.fileName + '\')">Delete Video</button>' : ''}
+        </div>
+      `;
+
+      if (video.sharedSettings === 'private') {
+        if (video.uploadedBy === currentUser) {
+          videosContainer.appendChild(videoItem);
+        }
+      } else if (video.sharedSettings === 'public') {
+        publicGallery.appendChild(videoItem);
+      }
+    });
+  };
+
+  allVideos.onerror = function (event) {
+    console.error("Error retrieving videos:", event);
+  };
+}
+
+// Search videos by title or description
+function searchVideos() {
+  const searchQuery = document.getElementById("searchInput").value.toLowerCase();
+  const videosContainer = document.getElementById("videosContainer");
+  const publicGallery = document.getElementById("publicGallery");
+
+  videosContainer.innerHTML = '';
+  publicGallery.innerHTML = '';
+
+  const transaction = db.transaction(["videos"], "readonly");
+  const videoStore = transaction.objectStore("videos");
+  const allVideos = videoStore.getAll();
+
+  allVideos.onsuccess = function (event) {
+    const uploadedVideos = event.target.result;
+
+    uploadedVideos.forEach(video => {
+      if (video.title.toLowerCase().includes(searchQuery) || video.description.toLowerCase().includes(searchQuery)) {
+        const videoItem = document.createElement('div');
+        videoItem.classList.add('videoItem');
+        videoItem.innerHTML = `
+          <video src="${video.videoDataURL}" controls></video>
+          <div class="dots" onclick="toggleMenu(event, '${video.fileName}')">...</div>
+        `;
+
+        if (video.sharedSettings === 'private') {
+          if (video.uploadedBy === currentUser) {
+            videosContainer.appendChild(videoItem);
+          }
+        } else if (video.sharedSettings === 'public') {
+          publicGallery.appendChild(videoItem);
+        }
+      }
+    });
+  };
+
+  allVideos.onerror = function (event) {
+    console.error("Error retrieving videos:", event);
+  };
+}
+
+// Toggle dots menu for a specific video
+function toggleMenu(event, fileName) {
+  event.stopPropagation();
+  const menu = document.getElementById(`dotsMenu_${fileName}`);
+  menu.style.display = menu.style.display === 'block' ? 'none' : 'block';
+}
+
+// View video
+function viewVideo(fileName) {
+  const transaction = db.transaction(["videos"], "readonly");
+  const videoStore = transaction.objectStore("videos");
+  const videoRequest = videoStore.get(fileName);
+
+  videoRequest.onsuccess = function (event) {
+    const video = event.target.result;
+    if (video) {
+      const videoPlayer = document.createElement('video');
+      videoPlayer.src = video.videoDataURL;
+      videoPlayer.controls = true;
+      videoPlayer.autoplay = true;
+      document.body.appendChild(videoPlayer);
+    }
+  };
+
+  videoRequest.onerror = function (event) {
+    console.error("Error retrieving video:", event);
+  };
+}
+
+// Report video (for now, just alerting)
+function reportVideo(fileName) {
+  const transaction = db.transaction(["videos"], "readonly");
+  const videoStore = transaction.objectStore("videos");
+  const videoRequest = videoStore.get(fileName);
+
+  videoRequest.onsuccess = function (event) {
+    const video = event.target.result;
+    alert(`The video "${video.title}" has been reported for removal.`);
+  };
+
+  videoRequest.onerror = function (event) {
+    console.error("Error retrieving video:", event);
+  };
+}
+
+// Delete video if authorized (i.e., uploaded by the user)
+function deleteVideo(fileName) {
+  const transaction = db.transaction(["videos"], "readwrite");
+  const videoStore = transaction.objectStore("videos");
+  const videoRequest = videoStore.delete(fileName);
+
+  videoRequest.onsuccess = function () {
+    displayVideos();
+  };
+
+  videoRequest.onerror = function (event) {
+    console.error("Error deleting video:", event);
+  };
+}
+</script>
+
+</body>
+</html>
